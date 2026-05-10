@@ -3,6 +3,10 @@ import os
 import json
 import paramiko
 import time
+import threading
+import urllib.request
+import urllib.error
+import queue
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -10,13 +14,79 @@ load_dotenv()
 
 app = Flask(__name__, static_folder='../frontend')
 
+# Cache for MAC OUI to Vendor
+VENDOR_CACHE = {}
+VENDOR_CACHE_LOCK = threading.Lock()
+
+# Queue for MAC lookups to respect rate limits
+lookup_queue = queue.Queue()
+
+def mac_lookup_worker():
+    """Worker thread to process MAC lookups at a safe rate."""
+    while True:
+        try:
+            mac = lookup_queue.get()
+            if mac is None:
+                break
+                
+            oui = mac.lower()[:8]
+            
+            with VENDOR_CACHE_LOCK:
+                if oui in VENDOR_CACHE and VENDOR_CACHE[oui] != "Loading...":
+                    lookup_queue.task_done()
+                    continue
+            
+            try:
+                url = f"https://api.macvendors.com/{mac}"
+                req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+                
+                with urllib.request.urlopen(req, timeout=3) as response:
+                    vendor = response.read().decode('utf-8')
+                    with VENDOR_CACHE_LOCK:
+                        VENDOR_CACHE[oui] = vendor
+            except urllib.error.HTTPError as e:
+                with VENDOR_CACHE_LOCK:
+                    if e.code == 404:
+                        VENDOR_CACHE[oui] = "Unknown Vendor"
+                    elif e.code == 429:
+                        VENDOR_CACHE[oui] = "Rate Limited"
+                        time.sleep(5) # Backoff
+                    else:
+                        VENDOR_CACHE[oui] = "Error"
+            except Exception as e:
+                print(f"Error fetching vendor for {mac}: {e}")
+                with VENDOR_CACHE_LOCK:
+                    VENDOR_CACHE[oui] = "Unknown"
+                    
+            lookup_queue.task_done()
+            time.sleep(1) # Rate limit respect
+            
+        except Exception as e:
+            print(f"Worker error: {e}")
+            time.sleep(1)
+
+# Start the worker thread
+worker_thread = threading.Thread(target=mac_lookup_worker, daemon=True)
+worker_thread.start()
+
+def read_all_output(chan, timeout=2.0):
+    """Reads all available output from the channel until no more data arrives for 'timeout' seconds."""
+    output = ""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if chan.recv_ready():
+            output += chan.recv(1024).decode()
+            start_time = time.time() # Reset timer on data
+        else:
+            time.sleep(0.1)
+    return output
+
 def run_router_command(command):
-    """Runs a command on the EdgeRouter via SSH using invoke_shell."""
+    """Runs a command on the EdgeRouter via SSH using invoke_shell with robust reading."""
     host = os.environ.get('ROUTER_IP')
     user = os.environ.get('ROUTER_USER')
     key_path = os.environ.get('SSH_KEY_PATH')
     
-    # Resolve path relative to project root if needed
     if key_path and not os.path.isabs(key_path):
         key_path = os.path.join(os.path.dirname(__file__), '../', key_path)
         
@@ -26,23 +96,18 @@ def run_router_command(command):
     try:
         ssh.connect(host, username=user, key_filename=key_path, timeout=5)
         chan = ssh.invoke_shell()
-        time.sleep(2)
+        
+        # Wait for initial prompt
+        read_all_output(chan, timeout=1.0)
         
         # Disable pager
         chan.send("terminal length 0\n")
-        time.sleep(0.5)
+        read_all_output(chan, timeout=0.5)
         
-        # Clear buffer
-        while chan.recv_ready():
-            chan.recv(1024)
-            
+        # Run command
         chan.send(command + "\n")
-        time.sleep(2) # Give command time to run
+        output = read_all_output(chan, timeout=1.0)
         
-        output = ""
-        while chan.recv_ready():
-            output += chan.recv(1024).decode()
-            
         return output
     except Exception as e:
         print(f"Failed to connect or run command: {e}")
@@ -65,29 +130,24 @@ def run_router_config_commands(commands):
     try:
         ssh.connect(host, username=user, key_filename=key_path, timeout=5)
         chan = ssh.invoke_shell()
-        time.sleep(2)
+        read_all_output(chan, timeout=1.0)
         
-        # Clear buffer
-        while chan.recv_ready():
-            chan.recv(1024)
-            
         chan.send("configure\n")
-        time.sleep(1)
+        read_all_output(chan, timeout=0.5)
         
         for cmd in commands:
             chan.send(cmd + "\n")
-            time.sleep(1)
+            read_all_output(chan, timeout=0.5)
             
         chan.send("commit\n")
-        time.sleep(2)
-        chan.send("save\n")
-        time.sleep(1)
-        chan.send("exit\n")
+        read_all_output(chan, timeout=2.0) # Commit takes longer
         
-        output = ""
-        while chan.recv_ready():
-            output += chan.recv(1024).decode()
-            
+        chan.send("save\n")
+        read_all_output(chan, timeout=1.0)
+        
+        chan.send("exit\n")
+        output = read_all_output(chan, timeout=0.5)
+        
         return output
     except Exception as e:
         print(f"Failed to connect or run config commands: {e}")
@@ -95,6 +155,7 @@ def run_router_config_commands(commands):
     finally:
         ssh.close()
 
+# ... (parse_leases, parse_arp, get_routed_ips remain the same) ...
 def get_routed_ips():
     output = run_router_command("show configuration commands | grep Tailscale_Routed")
     if not output:
@@ -113,7 +174,6 @@ def parse_leases():
         return []
     devices = []
     lines = output.splitlines()
-    # Find the start of data (skip headers)
     start_index = 0
     for i, line in enumerate(lines):
         if "IP address" in line and "Hardware Address" in line:
@@ -124,11 +184,12 @@ def parse_leases():
         return []
         
     for line in lines[start_index:]:
-        if not line.strip():
+        if not line.strip() or line.startswith("shikua@"):
             continue
         parts = line.split()
         if len(parts) >= 5:
-            devices.append({"ip": parts[0], "mac": parts[1], "name": parts[4] if len(parts) > 4 else "Unknown", "static": False})
+            name = parts[5] if len(parts) > 5 else "Unknown"
+            devices.append({"ip": parts[0], "mac": parts[1], "name": name, "static": False})
     return devices
 
 def parse_arp():
@@ -137,7 +198,6 @@ def parse_arp():
         return []
     devices = []
     lines = output.splitlines()
-    # Find start of data
     start_index = 0
     for i, line in enumerate(lines):
         if "Address" in line and "HWaddress" in line:
@@ -148,7 +208,7 @@ def parse_arp():
         return []
         
     for line in lines[start_index:]:
-        if not line.strip() or "incomplete" in line:
+        if not line.strip() or "incomplete" in line or line.startswith("shikua@"):
             continue
         parts = line.split()
         if len(parts) >= 3 and ":" in parts[2]:
@@ -178,11 +238,22 @@ def get_devices():
             device_map[dev['mac']]['static'] = False
         else:
             device_map[dev['mac']] = dev
+            
     for mac, dev in device_map.items():
         dev['routed'] = dev['ip'] in routed_ips
         
+        oui = mac.lower()[:8]
+        with VENDOR_CACHE_LOCK:
+            if oui in VENDOR_CACHE:
+                dev['hardware'] = VENDOR_CACHE[oui]
+            else:
+                dev['hardware'] = "Loading..."
+                VENDOR_CACHE[oui] = "Loading..."
+                lookup_queue.put(mac)
+        
     return jsonify(list(device_map.values()))
 
+# ... (toggle_routing and make_static remain the same) ...
 @app.route('/api/devices/<mac>/toggle', methods=['POST'])
 def toggle_routing(mac):
     data = request.json

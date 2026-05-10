@@ -3,13 +3,16 @@ import json
 import os
 import time
 
-# Load config
-with open(os.path.join(os.path.dirname(__file__), '../config.json')) as f:
-    config = json.load(f)
+# Load config from .env
+from dotenv import load_dotenv
+load_dotenv()
 
-host = config['router_ip']
-user = config['router_user']
-key_path = os.path.join(os.path.dirname(__file__), '../', config['ssh_key_path'])
+host = os.environ.get('ROUTER_IP')
+user = os.environ.get('ROUTER_USER')
+key_path = os.environ.get('SSH_KEY_PATH')
+
+if key_path and not os.path.isabs(key_path):
+    key_path = os.path.join(os.path.dirname(__file__), '../', key_path)
 
 try:
     print(f"Connecting to EdgeRouter {host}...")
@@ -29,15 +32,15 @@ try:
     while chan.recv_ready():
         chan.recv(1024)
 
-    # Check ARP
-    print("Checking ARP table...")
-    chan.send("show arp\n")
+    # Check Leases
+    print("Checking DHCP leases...")
+    chan.send("show dhcp leases\n")
     time.sleep(2)
     
     output = ""
     while chan.recv_ready():
         output += chan.recv(1024).decode()
-    print("ARP Output:")
+    print("Leases Output:")
     print(output)
 
 except Exception as e:

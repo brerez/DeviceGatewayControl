@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', () => {
             tr.innerHTML = `
                 <td>
                     <div class="device-name">${device.name || 'Unknown Device'}</div>
+                    <div class="device-vendor" style="font-size: 0.75rem; color: #64748b;">${device.hardware || 'Unknown Vendor'}</div>
                 </td>
                 <td>${device.ip}</td>
                 <td><code>${device.mac}</code></td>
