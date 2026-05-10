@@ -7,7 +7,7 @@
     - [x] Create PBR routing table (pointing to Ubuntu)
     - [x] Create firewall modify ruleset (Integrated into existing 'detour' ruleset)
     - [x] Create `Tailscale_Routed` address group
-- [ ] Backend Development
+- [x] Backend Development
     - [x] Initialize project in workspace
     - [x] Implement SSH client to talk to ER-X
     - [x] Implement DHCP lease parser

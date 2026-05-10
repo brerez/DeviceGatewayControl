@@ -130,24 +130,25 @@ def run_router_config_commands(commands):
     try:
         ssh.connect(host, username=user, key_filename=key_path, timeout=5)
         chan = ssh.invoke_shell()
-        read_all_output(chan, timeout=1.0)
+        output = read_all_output(chan, timeout=1.0)
         
         chan.send("configure\n")
-        read_all_output(chan, timeout=0.5)
+        output += read_all_output(chan, timeout=0.5)
         
         for cmd in commands:
             chan.send(cmd + "\n")
-            read_all_output(chan, timeout=0.5)
+            output += read_all_output(chan, timeout=0.5)
             
         chan.send("commit\n")
-        read_all_output(chan, timeout=2.0) # Commit takes longer
+        output += read_all_output(chan, timeout=2.0) # Commit takes longer
         
         chan.send("save\n")
-        read_all_output(chan, timeout=1.0)
+        output += read_all_output(chan, timeout=1.0)
         
         chan.send("exit\n")
-        output = read_all_output(chan, timeout=0.5)
+        output += read_all_output(chan, timeout=0.5)
         
+        print(f"Config Commands Output:\n{output}")
         return output
     except Exception as e:
         print(f"Failed to connect or run config commands: {e}")
@@ -157,15 +158,15 @@ def run_router_config_commands(commands):
 
 # ... (parse_leases, parse_arp, get_routed_ips remain the same) ...
 def get_routed_ips():
-    output = run_router_command("show configuration commands | grep Tailscale_Routed")
+    output = run_router_command("show configuration commands | grep Tailscale_Routed_Devices")
     if not output:
         return []
     ips = []
     for line in output.splitlines():
         if "address" in line and not "description" in line:
             parts = line.split()
-            if len(parts) >= 6:
-                ips.append(parts[5])
+            if len(parts) >= 7:
+                ips.append(parts[6])
     return ips
 
 def parse_leases():
@@ -271,9 +272,9 @@ def toggle_routing(mac):
         
     commands = []
     if enable:
-        commands.append(f"set firewall group address-group Tailscale_Routed address {target_ip}")
+        commands.append(f"set firewall group address-group Tailscale_Routed_Devices address {target_ip}")
     else:
-        commands.append(f"delete firewall group address-group Tailscale_Routed address {target_ip}")
+        commands.append(f"delete firewall group address-group Tailscale_Routed_Devices address {target_ip}")
         
     output = run_router_config_commands(commands)
     

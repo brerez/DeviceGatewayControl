@@ -1,36 +1,22 @@
 import paramiko
-import json
 import os
+import time
+from dotenv import load_dotenv
 
-# Load config
-with open(os.path.join(os.path.dirname(__file__), '../config.json')) as f:
-    config = json.load(f)
+# Load environment variables from .env file
+load_dotenv()
 
-host = config['ubuntu_ip']
-user = config['ubuntu_user']
-key_path = os.path.join(os.path.dirname(__file__), '../', config['ssh_key_path'])
+host = os.environ.get('UBUNTU_IP')
+user = os.environ.get('UBUNTU_USER')
+key_path = os.environ.get('SSH_KEY_PATH')
 
-# Password is still needed for sudo on Ubuntu if not configured passwordless
-# We should prompt for it or use a key if sudo allows it.
-# For now, let's assume we need to prompt or the user can provide it.
-# Wait, the user said "make sure no passwords will be in any file".
-# So I should NOT hardcode the sudo password.
-# I'll modify the script to ask for the sudo password if needed, or assume passwordless sudo.
-# Let's prompt for it if it fails or just use the key for SSH and ask for sudo password.
-# Actually, I can use `getpass` to ask interactively if running manually.
-# But for automation, it's better to avoid prompting if possible.
-# Let's see if we can run without sudo for some commands or if we must have it.
-# We must have it for sysctl and iptables.
-# I'll update the script to read the sudo password from an environment variable or prompt.
-# Let's use an environment variable `SUDO_PASSWORD` and NOT save it in the file.
-
-import getpass
+if key_path and not os.path.isabs(key_path):
+    key_path = os.path.join(os.path.dirname(__file__), '../', key_path)
 
 sudo_password = os.environ.get('SUDO_PASSWORD')
 if not sudo_password:
     print("SUDO_PASSWORD environment variable not set.")
-    # Fallback to prompt if running interactively
-    # sudo_password = getpass.getpass("Enter sudo password for Ubuntu: ")
+    # Fallback can be added if needed
 
 def run_sudo_command(ssh, command, password):
     if not password:
@@ -41,6 +27,8 @@ def run_sudo_command(ssh, command, password):
     exit_status = stdout.channel.recv_exit_status()
     print(f"Command: {command}")
     print(f"Exit Status: {exit_status}")
+    print(f"Stdout: {stdout.read().decode()}")
+    print(f"Stderr: {stderr.read().decode()}")
     print("-" * 40)
     return exit_status
 
@@ -59,6 +47,10 @@ try:
     print(f"Setting up MASQUERADE on {ts_interface}...")
     cmd = f"sh -c 'iptables -t nat -C POSTROUTING -o {ts_interface} -j MASQUERADE || iptables -t nat -A POSTROUTING -o {ts_interface} -j MASQUERADE'"
     run_sudo_command(ssh, cmd, sudo_password)
+
+    # Also make IP forwarding persistent!
+    print("Making IP forwarding persistent...")
+    run_sudo_command(ssh, "sh -c 'echo net.ipv4.ip_forward=1 >> /etc/sysctl.conf'", sudo_password)
 
     print("Configuration completed successfully!")
 
