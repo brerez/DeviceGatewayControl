@@ -26,6 +26,7 @@ def mac_lookup_worker():
     while True:
         try:
             mac = lookup_queue.get()
+            print(f"Worker processing MAC: {mac}")
             if mac is None:
                 break
                 

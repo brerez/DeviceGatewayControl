@@ -1,0 +1,13 @@
+version: '3'
+
+services:
+  app:
+    build: .
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./.env:/app/.env
+      - ./id_rsa_docker:/app/ssh_key
+    environment:
+      - SSH_KEY_PATH=/app/ssh_key
+    restart: unless-stopped
