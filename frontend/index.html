@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gateway Control</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Gateway Control</h1>
+            <p class="subtitle">Selectively route devices through Israeli Exit Node</p>
+        </header>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <span class="stat-label">Total Devices</span>
+                <span class="stat-value" id="total-devices">0</span>
+            </div>
+            <div class="stat-card highlighted">
+                <span class="stat-label">Routed Devices</span>
+                <span class="stat-value" id="routed-devices">0</span>
+            </div>
+        </div>
+
+        <main>
+            <div class="card glass">
+                <div class="card-header">
+                    <h2>Network Devices</h2>
+                    <button id="refresh-btn" class="btn secondary">Refresh</button>
+                </div>
+                <div class="table-responsive">
+                    <table id="devices-table">
+                        <thead>
+                            <tr>
+                                <th>Device Name</th>
+                                <th>IP Address</th>
+                                <th>MAC Address</th>
+                                <th>Status</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody id="devices-body">
+                            <!-- Rows will be inserted here by JS -->
+                            <tr>
+                                <td colspan="5" class="loading">Loading devices...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+    <script src="app.js"></script>
+</body>
+</html>
