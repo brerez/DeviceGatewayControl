@@ -245,12 +245,22 @@ def get_devices():
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     try:
-        pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
-        ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
-        
-        combined_command = "vbash -c '/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases; echo ===ARP===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show arp; echo ===ROUTED===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands | grep Tailscale_Routed_Devices; echo ===CONFIG===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration'"
-        stdin, stdout, stderr = ssh.exec_command(combined_command)
-        combined_output = stdout.read().decode()
+        combined_output = ""
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
+                ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
+                
+                combined_command = "vbash -c '/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases; echo ===ARP===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show arp; echo ===ROUTED===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands | grep Tailscale_Routed_Devices; echo ===CONFIG===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration'"
+                stdin, stdout, stderr = ssh.exec_command(combined_command)
+                combined_output = stdout.read().decode()
+                break
+            except Exception as e:
+                print(f"SSH attempt {attempt + 1} failed: {e}", flush=True)
+                if attempt == max_retries - 1:
+                    raise e
+                time.sleep(2)
         
         parts = combined_output.split("===ARP===")
         leases_output = parts[0]
