@@ -9,11 +9,16 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const response = await fetch('/api/devices');
-            const devices = await response.json();
-            renderDevices(devices);
+            const data = await response.json();
+            
+            if (!response.ok) {
+                throw new Error(data.message || 'Server error');
+            }
+            
+            renderDevices(data);
         } catch (error) {
             console.error('Error fetching devices:', error);
-            devicesBody.innerHTML = '<tr><td colspan="5" class="loading" style="color: #f87171;">Error loading devices. Is the backend running?</td></tr>';
+            devicesBody.innerHTML = `<tr><td colspan="5" class="loading" style="color: #f87171;">Error loading devices: ${error.message}</td></tr>`;
         }
     }
 

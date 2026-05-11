@@ -156,9 +156,7 @@ def run_router_config_commands(commands):
         ssh.close()
 
 # ... (parse_leases, parse_arp, get_routed_ips remain the same) ...
-def get_routed_ips(ssh):
-    stdin, stdout, stderr = ssh.exec_command("vbash -c '/opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands | grep Tailscale_Routed_Devices'")
-    output = stdout.read().decode()
+def get_routed_ips(output):
     if not output:
         return []
     ips = []
@@ -169,9 +167,7 @@ def get_routed_ips(ssh):
                 ips.append(parts[6])
     return ips
 
-def parse_leases(ssh):
-    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases")
-    output = stdout.read().decode()
+def parse_leases(output):
     if not output:
         return []
     devices = []
@@ -194,9 +190,7 @@ def parse_leases(ssh):
             devices.append({"ip": parts[0], "mac": parts[1], "name": name, "static": False})
     return devices
 
-def parse_arp(ssh):
-    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show arp")
-    output = stdout.read().decode()
+def parse_arp(output):
     if not output:
         return []
     devices = []
@@ -218,9 +212,7 @@ def parse_arp(ssh):
             devices.append({"ip": parts[0], "mac": parts[2], "name": "Unknown", "static": True})
     return devices
 
-def get_static_macs(ssh):
-    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration")
-    output = stdout.read().decode()
+def get_static_macs(output):
     if not output:
         return set()
     
@@ -256,14 +248,28 @@ def get_devices():
         pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
         ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
         
-        leases = parse_leases(ssh)
-        arp_entries = parse_arp(ssh)
-        routed_ips = get_routed_ips(ssh)
-        static_macs = get_static_macs(ssh)
+        combined_command = "vbash -c '/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases; echo ===ARP===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show arp; echo ===ROUTED===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands | grep Tailscale_Routed_Devices; echo ===CONFIG===; /opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration'"
+        stdin, stdout, stderr = ssh.exec_command(combined_command)
+        combined_output = stdout.read().decode()
+        
+        parts = combined_output.split("===ARP===")
+        leases_output = parts[0]
+        
+        parts = parts[1].split("===ROUTED===")
+        arp_output = parts[0]
+        
+        parts = parts[1].split("===CONFIG===")
+        routed_output = parts[0]
+        config_output = parts[1]
+        
+        leases = parse_leases(leases_output)
+        arp_entries = parse_arp(arp_output)
+        routed_ips = get_routed_ips(routed_output)
+        static_macs = get_static_macs(config_output)
         
     except Exception as e:
         print(f"Failed to connect or get data in get_devices: {e}", flush=True)
-        return jsonify([]), 200 # Return empty list on failure to avoid UI crash
+        return jsonify({"status": "error", "message": str(e)}), 500
     finally:
         ssh.close()
     
