@@ -82,8 +82,9 @@ def read_all_output(chan, timeout=2.0):
             time.sleep(0.1)
     return output
 
+
 def run_router_command(command):
-    """Runs a command on the EdgeRouter via SSH using invoke_shell with robust reading."""
+    """Runs a command on the EdgeRouter via SSH using exec_command."""
     host = os.environ.get('ROUTER_IP')
     user = os.environ.get('ROUTER_USER')
     key_path = os.environ.get('SSH_KEY_PATH')
@@ -95,23 +96,17 @@ def run_router_command(command):
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     try:
-        ssh.connect(host, username=user, key_filename=key_path, timeout=5)
-        chan = ssh.invoke_shell()
+        pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
+        ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
         
-        # Wait for initial prompt
-        read_all_output(chan, timeout=1.0)
-        
-        # Disable pager
-        chan.send("terminal length 0\n")
-        read_all_output(chan, timeout=0.5)
-        
-        # Run command
-        chan.send(command + "\n")
-        output = read_all_output(chan, timeout=1.0)
+        # Use wrapper for show commands
+        full_command = f"/opt/vyatta/bin/vyatta-op-cmd-wrapper {command}"
+        stdin, stdout, stderr = ssh.exec_command(full_command)
+        output = stdout.read().decode()
         
         return output
     except Exception as e:
-        print(f"Failed to connect or run command: {e}")
+        print(f"Failed to connect or run command: {e}", flush=True)
         return None
     finally:
         ssh.close()
@@ -129,7 +124,8 @@ def run_router_config_commands(commands):
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     
     try:
-        ssh.connect(host, username=user, key_filename=key_path, timeout=5)
+        pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
+        ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
         chan = ssh.invoke_shell()
         output = read_all_output(chan, timeout=1.0)
         
