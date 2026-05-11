@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, send_from_directory
 import os
 import json
+import re
 import paramiko
 import time
 import threading
@@ -130,22 +131,23 @@ def run_router_config_commands(commands):
         output = read_all_output(chan, timeout=1.0)
         
         chan.send("configure\n")
-        output += read_all_output(chan, timeout=0.5)
+        output += read_all_output(chan, timeout=1.0)
         
         for cmd in commands:
             chan.send(cmd + "\n")
-            output += read_all_output(chan, timeout=0.5)
+            output += read_all_output(chan, timeout=1.0)
+            time.sleep(0.5)
             
         chan.send("commit\n")
-        output += read_all_output(chan, timeout=2.0) # Commit takes longer
+        output += read_all_output(chan, timeout=5.0) # Commit takes longer
         
         chan.send("save\n")
-        output += read_all_output(chan, timeout=1.0)
+        output += read_all_output(chan, timeout=2.0)
         
         chan.send("exit\n")
-        output += read_all_output(chan, timeout=0.5)
+        output += read_all_output(chan, timeout=1.0)
         
-        print(f"Config Commands Output:\n{output}")
+        print(f"Config Commands Output:\n{output}", flush=True)
         return output
     except Exception as e:
         print(f"Failed to connect or run config commands: {e}")
@@ -154,8 +156,9 @@ def run_router_config_commands(commands):
         ssh.close()
 
 # ... (parse_leases, parse_arp, get_routed_ips remain the same) ...
-def get_routed_ips():
-    output = run_router_command("show configuration commands | grep Tailscale_Routed_Devices")
+def get_routed_ips(ssh):
+    stdin, stdout, stderr = ssh.exec_command("vbash -c '/opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration commands | grep Tailscale_Routed_Devices'")
+    output = stdout.read().decode()
     if not output:
         return []
     ips = []
@@ -166,8 +169,9 @@ def get_routed_ips():
                 ips.append(parts[6])
     return ips
 
-def parse_leases():
-    output = run_router_command("show dhcp leases")
+def parse_leases(ssh):
+    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases")
+    output = stdout.read().decode()
     if not output:
         return []
     devices = []
@@ -175,7 +179,7 @@ def parse_leases():
     start_index = 0
     for i, line in enumerate(lines):
         if "IP address" in line and "Hardware Address" in line:
-            start_index = i + 2
+            start_index = i + 1
             break
             
     if start_index == 0:
@@ -190,8 +194,9 @@ def parse_leases():
             devices.append({"ip": parts[0], "mac": parts[1], "name": name, "static": False})
     return devices
 
-def parse_arp():
-    output = run_router_command("show arp")
+def parse_arp(ssh):
+    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show arp")
+    output = stdout.read().decode()
     if not output:
         return []
     devices = []
@@ -213,6 +218,20 @@ def parse_arp():
             devices.append({"ip": parts[0], "mac": parts[2], "name": "Unknown", "static": True})
     return devices
 
+def get_static_macs(ssh):
+    stdin, stdout, stderr = ssh.exec_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show configuration")
+    output = stdout.read().decode()
+    if not output:
+        return set()
+    
+    mappings = re.findall(r'static-mapping\s+\S+\s+\{[^}]+\}', output)
+    macs = set()
+    for m in mappings:
+        mac_match = re.search(r'mac-address\s+([0-9a-fA-F:]{17})', m)
+        if mac_match:
+            macs.add(mac_match.group(1).lower())
+    return macs
+
 @app.route('/')
 def serve_index():
     return send_from_directory(app.static_folder, 'index.html')
@@ -223,22 +242,44 @@ def serve_static(path):
 
 @app.route('/api/devices', methods=['GET'])
 def get_devices():
-    leases = parse_leases()
-    arp_entries = parse_arp()
-    routed_ips = get_routed_ips()
+    host = os.environ.get('ROUTER_IP')
+    user = os.environ.get('ROUTER_USER')
+    key_path = os.environ.get('SSH_KEY_PATH')
+    
+    if key_path and not os.path.isabs(key_path):
+        key_path = os.path.join(os.path.dirname(__file__), '../', key_path)
+        
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    
+    try:
+        pkey = paramiko.Ed25519Key.from_private_key_file(key_path)
+        ssh.connect(host, username=user, pkey=pkey, timeout=5, allow_agent=False, look_for_keys=False)
+        
+        leases = parse_leases(ssh)
+        arp_entries = parse_arp(ssh)
+        routed_ips = get_routed_ips(ssh)
+        static_macs = get_static_macs(ssh)
+        
+    except Exception as e:
+        print(f"Failed to connect or get data in get_devices: {e}", flush=True)
+        return jsonify([]), 200 # Return empty list on failure to avoid UI crash
+    finally:
+        ssh.close()
     
     device_map = {}
     for dev in arp_entries:
         device_map[dev['mac']] = dev
+        
     for dev in leases:
         if dev['mac'] in device_map:
             device_map[dev['mac']]['name'] = dev['name']
-            device_map[dev['mac']]['static'] = False
         else:
             device_map[dev['mac']] = dev
             
     for mac, dev in device_map.items():
         dev['routed'] = dev['ip'] in routed_ips
+        dev['static'] = mac.lower() in static_macs
         
         oui = mac.lower()[:8]
         with VENDOR_CACHE_LOCK:
@@ -293,6 +334,9 @@ def make_static(mac):
             
     if not target_ip:
         return jsonify({"status": "error", "message": "Device IP not found"}), 404
+        
+    # Sanitize name for EdgeOS (alphanumeric and underscores only)
+    target_name = re.sub(r'[^a-zA-Z0-9_]', '_', target_name)
         
     commands = [
         f"set service dhcp-server shared-network-name LAN subnet 172.15.0.0/24 static-mapping {target_name} ip-address {target_ip}",
