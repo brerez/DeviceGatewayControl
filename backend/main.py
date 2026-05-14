@@ -186,6 +186,8 @@ def parse_leases(output):
             continue
         parts = line.split()
         if len(parts) >= 5:
+            if parts[0].startswith('-'):
+                continue
             name = parts[5] if len(parts) > 5 else "Unknown"
             devices.append({"ip": parts[0], "mac": parts[1], "name": name, "static": False})
     return devices
@@ -212,17 +214,23 @@ def parse_arp(output):
             devices.append({"ip": parts[0], "mac": parts[2], "name": "Unknown", "static": True})
     return devices
 
-def get_static_macs(output):
+def get_static_mappings(output):
     if not output:
-        return set()
+        return []
     
-    mappings = re.findall(r'static-mapping\s+\S+\s+\{[^}]+\}', output)
-    macs = set()
-    for m in mappings:
-        mac_match = re.search(r'mac-address\s+([0-9a-fA-F:]{17})', m)
-        if mac_match:
-            macs.add(mac_match.group(1).lower())
-    return macs
+    mappings = re.findall(r'static-mapping\s+(\S+)\s+\{([^}]+)\}', output)
+    devices = []
+    for name, body in mappings:
+        ip_match = re.search(r'ip-address\s+(\S+)', body)
+        mac_match = re.search(r'mac-address\s+([0-9a-fA-F:]{17})', body)
+        if ip_match and mac_match:
+            devices.append({
+                "ip": ip_match.group(1),
+                "mac": mac_match.group(1).lower(),
+                "name": name,
+                "static": True
+            })
+    return devices
 
 @app.route('/')
 def serve_index():
@@ -275,7 +283,7 @@ def get_devices():
         leases = parse_leases(leases_output)
         arp_entries = parse_arp(arp_output)
         routed_ips = get_routed_ips(routed_output)
-        static_macs = get_static_macs(config_output)
+        static_mappings = get_static_mappings(config_output)
         
     except Exception as e:
         print(f"Failed to connect or get data in get_devices: {e}", flush=True)
@@ -284,18 +292,28 @@ def get_devices():
         ssh.close()
     
     device_map = {}
-    for dev in arp_entries:
+    
+    # 1. Add static mappings first
+    for dev in static_mappings:
         device_map[dev['mac']] = dev
         
+    # 2. Merge ARP entries
+    for dev in arp_entries:
+        if dev['mac'] not in device_map:
+            dev['static'] = False
+            device_map[dev['mac']] = dev
+            
+    # 3. Merge Leases
     for dev in leases:
         if dev['mac'] in device_map:
-            device_map[dev['mac']]['name'] = dev['name']
+            if dev['name'] != "Unknown":
+                device_map[dev['mac']]['name'] = dev['name']
         else:
+            dev['static'] = False
             device_map[dev['mac']] = dev
             
     for mac, dev in device_map.items():
         dev['routed'] = dev['ip'] in routed_ips
-        dev['static'] = mac.lower() in static_macs
         
         oui = mac.lower()[:8]
         with VENDOR_CACHE_LOCK:
