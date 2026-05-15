@@ -51,3 +51,57 @@ UBUNTU_IP=your_ubuntu_ip
 UBUNTU_USER=your_ubuntu_user
 SSH_KEY_PATH=keys/id_ed25519
 ```
+
+## EdgeRouter Firewall Configuration (PBR)
+
+To set up the policy-based routing on the EdgeRouter X, run the following commands in the EdgeOS CLI.
+
+### 1. Create Routing Table
+This table directs traffic to the Ubuntu server (`172.15.0.152`).
+```bash
+configure
+set protocols static table 10 route 0.0.0.0/0 next-hop 172.15.0.152
+commit
+```
+
+### 2. Create Modify Ruleset
+This ruleset matches traffic from the toggled devices and applies the routing table and MSS clamping.
+
+**Intended Setup (Using Groups)**:
+```bash
+set firewall modify detour description 'PBR and MSS Clamping'
+set firewall modify detour rule 4 action modify
+set firewall modify detour rule 4 modify tcp-mss 1240
+set firewall modify detour rule 4 source group address-group Tailscale_Routed_Devices
+set firewall modify detour rule 5 action modify
+set firewall modify detour rule 5 modify table 10
+set firewall modify detour rule 5 source group address-group Tailscale_Routed_Devices
+commit
+```
+
+**Apply to Interface**:
+```bash
+set interfaces switch switch0 firewall in modify detour
+commit
+save
+exit
+```
+
+### EdgeOS Quirks & Troubleshooting
+
+#### 1. Group Resolution Bug
+If you encounter an error like `group [Tailscale_Routed_Devices] is of type [Invalid]` when applying rules via scripts, you can apply the rule directly to specific IPs as a fallback:
+```bash
+set firewall modify detour rule 4 source address 172.15.0.56
+set firewall modify detour rule 5 source address 172.15.0.56
+```
+
+#### 2. "In Use" Ruleset Error
+If you cannot modify the `detour` ruleset because it is in use, use an interactive SSH session with a pseudo-terminal (`ssh -tt`) to run the commands, or briefly unbind it:
+```bash
+delete interfaces switch switch0 firewall in modify detour
+commit
+# ... make changes ...
+set interfaces switch switch0 firewall in modify detour
+commit
+```
