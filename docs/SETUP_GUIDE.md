@@ -65,14 +65,11 @@ commit
 ```
 
 ### 2. Create Modify Ruleset
-This ruleset matches traffic from the toggled devices and applies the routing table and MSS clamping.
+This ruleset matches traffic from the toggled devices and applies the routing table.
 
 **Intended Setup (Using Groups)**:
 ```bash
-set firewall modify detour description 'PBR and MSS Clamping'
-set firewall modify detour rule 4 action modify
-set firewall modify detour rule 4 modify tcp-mss 1240
-set firewall modify detour rule 4 source group address-group Tailscale_Routed_Devices
+set firewall modify detour description 'PBR for Toggled Devices'
 set firewall modify detour rule 5 action modify
 set firewall modify detour rule 5 modify table 10
 set firewall modify detour rule 5 source group address-group Tailscale_Routed_Devices
@@ -87,16 +84,38 @@ save
 exit
 ```
 
-### EdgeOS Quirks & Troubleshooting
+## Ubuntu Server Configuration
 
-#### 1. Group Resolution Bug
-If you encounter an error like `group [Tailscale_Routed_Devices] is of type [Invalid]` when applying rules via scripts, you can apply the rule directly to specific IPs as a fallback:
+The Ubuntu server acts as the gateway and handles the Tailscale connection.
+
+### 1. Enable IP Forwarding
+Ensure IP forwarding is enabled in `/etc/sysctl.conf`:
+```text
+net.ipv4.ip_forward=1
+```
+
+### 2. Set up NAT and MSS Clamping
+Run the following commands to set up NAT and fix the video streaming timeout issue (MTU/MSS mismatch):
+
 ```bash
-set firewall modify detour rule 4 source address 172.15.0.56
+# NAT/MASQUERADE on Tailscale interface
+sudo iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
+
+# MSS Clamping to fix video streaming timeouts
+sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
+```
+
+---
+
+## EdgeOS Quirks & Troubleshooting
+
+### 1. Group Resolution Bug
+If you encounter an error like `group [Tailscale_Routed_Devices] is of type [Invalid]` when applying rules via scripts on the router, you can apply the rule directly to specific IPs as a fallback:
+```bash
 set firewall modify detour rule 5 source address 172.15.0.56
 ```
 
-#### 2. "In Use" Ruleset Error
+### 2. "In Use" Ruleset Error
 If you cannot modify the `detour` ruleset because it is in use, use an interactive SSH session with a pseudo-terminal (`ssh -tt`) to run the commands, or briefly unbind it:
 ```bash
 delete interfaces switch switch0 firewall in modify detour
@@ -105,3 +124,6 @@ commit
 set interfaces switch switch0 firewall in modify detour
 commit
 ```
+
+### 3. Multiple Modify Actions in One Rule
+EdgeOS may not support applying both `modify table` and `modify tcp-mss` in the same ruleset effectively if they conflict or terminate. That is why MSS clamping was moved to the Ubuntu server.
