@@ -101,8 +101,8 @@ Run the following commands to set up NAT and fix the video streaming timeout iss
 # NAT/MASQUERADE on Tailscale interface
 sudo iptables -t nat -A POSTROUTING -o tailscale0 -j MASQUERADE
 
-# MSS Clamping to fix video streaming timeouts
-sudo iptables -t mangle -A FORWARD -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
+# MSS Clamping to fix video streaming timeouts (restricted to the Tailscale interface)
+sudo iptables -t mangle -A FORWARD -o tailscale0 -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
 ```
 
 ---
